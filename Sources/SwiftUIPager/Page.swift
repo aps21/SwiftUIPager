@@ -42,12 +42,29 @@ public class Page: ObservableObject {
     }
     
     #if !os(tvOS)
+
+    /// Snapshot of an in-flight drag (from `DragGesture` or `UIPanGestureRecognizer`).
+    struct PagerDragSample: Equatable {
+        var time: Date
+        var location: CGPoint
+        var translation: CGSize
+
+        init(time: Date, location: CGPoint, translation: CGSize) {
+            self.time = time
+            self.location = location
+            self.translation = translation
+        }
+
+        init(_ value: DragGesture.Value) {
+            self.init(time: value.time, location: value.location, translation: value.translation)
+        }
+    }
     
     /// `swipeGesture` translation on the X-Axis
     var draggingOffset: CGFloat = 0
 
-    /// `swipeGesture` last translation on the X-Axis
-    var lastDraggingValue: DragGesture.Value?
+    /// `swipeGesture` last drag sample (location, translation, time).
+    var lastDragSample: PagerDragSample?
     
     /// `swipeGesture` velocity on the X-Axis
     var draggingVelocity: Double = 0

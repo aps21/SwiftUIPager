@@ -18,9 +18,9 @@ extension Pager.PagerContent {
         pagerModel.draggingOffset
     }
 
-    /// `swipeGesture` last translation on the X-Axis
-    var lastDraggingValue: DragGesture.Value? {
-        pagerModel.lastDraggingValue
+    /// Last drag sample from the swipe gesture.
+    var lastDragSample: Page.PagerDragSample? {
+        pagerModel.lastDragSample
     }
 
     /// `swipeGesture` velocity on the X-Axis

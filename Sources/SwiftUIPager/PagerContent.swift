@@ -7,6 +7,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 ///
 /// `PagerContent` is the content of `Pager`. This view is needed so that `Pager` wrapps it around a `GeometryReader ` and passes the size in its initializer.
@@ -87,7 +90,7 @@ extension Pager {
         var interactiveScale: CGFloat = 1
 
         /// Opacity increment applied to unfocused pages
-        var opacityIncrement: Double? 
+        var opacityIncrement: Double?
 
         /// `true` if  `Pager` can be dragged
         var allowsDragging: Bool = true
@@ -133,7 +136,7 @@ extension Pager {
 
         /// Callback invoked when a new page is set
         var onPageChanged: ((Int) -> Void)?
-		
+
         /// Callback for a dragging began event
         var onDraggingBegan: (() -> Void)?
 
@@ -202,18 +205,28 @@ extension Pager {
 
             #if !os(tvOS)
             var wrappedView: AnyView = swipeInteractionArea == .page ? AnyView(stack) : AnyView(stack.contentShape(Rectangle()))
-            wrappedView = AnyView(wrappedView.gesture(allowsDragging ? swipeGesture : nil, priority: gesturePriority))
+            if allowsDragging {
+                #if os(iOS)
+                if #available(iOS 18.0, *) {
+                    wrappedView = AnyView(wrappedView.gesture(ios18PanSwipeGesture))
+                } else {
+                    wrappedView = AnyView(wrappedView.gesture(dragSwipeGesture, priority: gesturePriority))
+                }
+                #else
+                wrappedView = AnyView(wrappedView.gesture(dragSwipeGesture, priority: gesturePriority))
+                #endif
+            }
             #else
             let wrappedView = stack
-              .focusable()
-              .onMoveCommand(perform: self.onMoveCommandSent)
+                .focusable()
+                .onMoveCommand(perform: self.onMoveCommandSent)
             #endif
-          
+
             #if os(macOS)
             wrappedView = wrappedView
-              .focusable()
-              .onMoveCommand(perform: self.onMoveCommandSent)
-              .eraseToAny()
+                .focusable()
+                .onMoveCommand(perform: self.onMoveCommandSent)
+                .eraseToAny()
             #endif
 
             var resultView = wrappedView
@@ -289,10 +302,10 @@ extension Pager {
 
 @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
 extension Pager.PagerContent {
-  
+
     #if os(tvOS) || os(macOS)
     func onMoveCommandSent(_ command: MoveCommandDirection) {
-      let animation = self.draggingAnimation.animation ?? .default
+        let animation = self.draggingAnimation.animation ?? .default
         switch (command, isHorizontal) {
         case (.left, true):
             guard !dragForwardOnly else { return }
@@ -314,32 +327,55 @@ extension Pager.PagerContent {
 
     /// `DragGesture` customized to work with `Pager`
     #if !os(tvOS)
-    var swipeGesture: some Gesture {
+    private var dragSwipeGesture: some Gesture {
         DragGesture(minimumDistance: minimumDistance, coordinateSpace: .global)
             .updating($isGestureFinished) { _, state, _ in
                 state = false
             }
-            .onChanged({ value in
-                if !dragForwardOnly || dragTranslation(for: value).width < 0 {
-                    self.onDragChanged(with: value)
+            .onChanged { value in
+                if !self.dragForwardOnly || self.dragTranslation(for: Page.PagerDragSample(value)).width < 0 {
+                    self.onDragChanged(with: Page.PagerDragSample(value))
                 }
-            })
+            }
     }
 
+    #if os(iOS)
+    @available(iOS 18.0, *)
+    private var ios18PanSwipeGesture: PanGesture {
+        PanGesture { recognizer in
+            let sample = self.dragSample(from: recognizer)
+            switch recognizer.state {
+            case .began, .changed:
+                if !self.dragForwardOnly || self.dragTranslation(for: sample).width < 0 {
+                    self.onDragChanged(with: sample)
+                }
+            case .ended, .cancelled, .failed:
+                self.onDragGestureEnded()
+            default:
+                break
+            }
+        }
+    }
+    #endif
+
     func onDragChanged(with value: DragGesture.Value) {
+        onDragChanged(with: Page.PagerDragSample(value))
+    }
+
+    func onDragChanged(with sample: Page.PagerDragSample) {
         let animation = draggingAnimation.animation
         withAnimation(animation) {
-            if self.lastDraggingValue == nil {
+            if self.lastDragSample == nil {
                 onDraggingBegan?()
             }
 
-            let currentLocation = dragLocation(for: value)
-            let currentTranslation = dragTranslation(for: value)
-            let lastLocation = self.lastDraggingValue.flatMap(dragLocation) ?? currentLocation
+            let currentLocation = dragLocation(for: sample)
+            let currentTranslation = dragTranslation(for: sample)
+            let lastLocation = self.lastDragSample.map { dragLocation(for: $0) } ?? currentLocation
             let swipeAngle = (currentLocation - lastLocation).angle ?? .zero
             // Ignore swipes that aren't on the X-Axis
             guard swipeAngle.isAlongXAxis else {
-                self.pagerModel.lastDraggingValue = value
+                self.pagerModel.lastDragSample = sample
                 return
             }
 
@@ -353,7 +389,7 @@ extension Pager.PagerContent {
                 return
             }
 
-            let timeIncrement = value.time.timeIntervalSince(self.lastDraggingValue?.time ?? value.time)
+            let timeIncrement = sample.time.timeIntervalSince(self.lastDragSample?.time ?? sample.time)
             if timeIncrement != 0 {
                 self.pagerModel.draggingVelocity = Double(offsetIncrement) / timeIncrement
             }
@@ -364,7 +400,7 @@ extension Pager.PagerContent {
             }
 
             self.pagerModel.draggingOffset = newOffset
-            self.pagerModel.lastDraggingValue = value
+            self.pagerModel.lastDragSample = sample
             self.onDraggingChanged?(Double(-self.draggingOffset / self.pageDistance))
             self.pagerModel.objectWillChange.send()
         }
@@ -395,14 +431,10 @@ extension Pager.PagerContent {
         }
         withAnimation(animation) {
             self.pagerModel.draggingOffset = 0
-            if pageIncrement != 0 {
-                self.pagerModel.pageIncrement = pageIncrement
-            }
-            if page != newPage {
-                self.pagerModel.index = newPage
-            }
+            self.pagerModel.pageIncrement = pageIncrement
             self.pagerModel.draggingVelocity = 0
-            self.pagerModel.lastDraggingValue = nil
+            self.pagerModel.lastDragSample = nil
+            self.pagerModel.index = newPage
             self.pagerModel.lastDigitalCrownPageOffset = CGFloat(pagerModel.index)
             self.pagerModel.objectWillChange.send()
             #if os(watchOS)
@@ -456,35 +488,84 @@ extension Pager.PagerContent {
         return (newPage, pageIncrement)
     }
 
-    private func dragTranslation(for value: DragGesture.Value) -> CGSize {
+    private func dragTranslation(for sample: Page.PagerDragSample) -> CGSize {
         let multiplier: CGFloat = scrollDirectionAngle == .zero ? 1 : -1
         if isHorizontal {
             return CGSize(
-                width: value.translation.width * multiplier,
-                height: value.translation.height * multiplier
+                width: sample.translation.width * multiplier,
+                height: sample.translation.height * multiplier
             )
         } else {
             return CGSize(
-                width: value.translation.height * multiplier,
-                height: value.translation.width * multiplier
+                width: sample.translation.height * multiplier,
+                height: sample.translation.width * multiplier
             )
         }
     }
 
-    private func dragLocation(for value: DragGesture.Value) -> CGPoint {
+    private func dragLocation(for sample: Page.PagerDragSample) -> CGPoint {
         let multiplier: CGFloat = scrollDirectionAngle == .zero ? 1 : -1
         if isHorizontal {
             return CGPoint(
-                x: value.location.x * multiplier,
-                y: value.location.y * multiplier
+                x: sample.location.x * multiplier,
+                y: sample.location.y * multiplier
             )
         } else {
             return CGPoint(
-                x: value.location.y * multiplier,
-                y: value.location.x * multiplier
+                x: sample.location.y * multiplier,
+                y: sample.location.x * multiplier
             )
         }
+    }
+
+    #if os(iOS)
+    private func dragSample(from pan: UIPanGestureRecognizer) -> Page.PagerDragSample {
+        let refView: UIView? = pan.view?.window ?? pan.view
+        let t = pan.translation(in: refView)
+        let translation = CGSize(width: t.x, height: t.y)
+        return Page.PagerDragSample(
+            time: Date(),
+            location: pan.location(in: refView),
+            translation: translation
+        )
     }
     #endif
+#endif
 
 }
+
+#if os(iOS)
+@available(iOS 18.0, *)
+struct PanGesture: UIGestureRecognizerRepresentable {
+    var handle: (UIPanGestureRecognizer) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { .init() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let gesture = UIPanGestureRecognizer()
+        gesture.delegate = context.coordinator
+        gesture.isEnabled = true
+        return gesture
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        handle(recognizer)
+    }
+
+    class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let panRecognizer = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+
+            let velocity = panRecognizer.velocity(in: gestureRecognizer.view)
+            return abs(velocity.y) < abs(velocity.x)
+        }
+    }
+}
+#endif
